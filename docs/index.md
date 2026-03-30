@@ -7,6 +7,7 @@ Welcome to the GitHub Copilot SDK docs. Whether you're building your first Copil
 | I want to... | Go to |
 |---|---|
 | **Build my first app** | [Getting Started](./getting-started.md) — end-to-end tutorial with streaming & custom tools |
+| **Use the SDK effectively** | [Best Practices](./best-practices.md) — prompts, tools, sessions, security, and more |
 | **Set up for production** | [Setup Guides](./setup/index.md) — architecture, deployment patterns, scaling |
 | **Configure authentication** | [Authentication](./auth/index.md) — GitHub OAuth, environment variables, BYOK |
 | **Add features to my app** | [Features](./features/index.md) — hooks, custom agents, MCP, skills, and more |
@@ -17,6 +18,10 @@ Welcome to the GitHub Copilot SDK docs. Whether you're building your first Copil
 ### [Getting Started](./getting-started.md)
 
 Step-by-step tutorial that takes you from zero to a working Copilot app with streaming responses and custom tools.
+
+### [Best Practices](./best-practices.md)
+
+Practical guidance for building reliable, efficient, and maintainable applications with the SDK — covering prompt design, tool design, session management, streaming, error handling, security, and more.
 
 ### [Setup](./setup/index.md)
 
