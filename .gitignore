@@ -2,3 +2,10 @@
 # Documentation validation output
 docs/.validation/
 .DS_Store
+
+# Starter — Next.js build artifacts and dependencies
+starters/mapii-ai/.next/
+starters/mapii-ai/out/
+starters/mapii-ai/node_modules/
+starters/mapii-ai/.env
+starters/mapii-ai/.env.local
