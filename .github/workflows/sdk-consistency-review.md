@@ -1,6 +1,7 @@
 ---
 description: Reviews PRs to ensure features are implemented consistently across all SDK language implementations
 on:
+  roles: all
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -14,7 +15,6 @@ on:
         description: "PR number to review"
         required: true
         type: string
-roles: all
 permissions:
   contents: read
   pull-requests: read
