@@ -2,3 +2,8 @@
 # Documentation validation output
 docs/.validation/
 .DS_Store
+
+# apps/web (Next.js)
+apps/web/.next/
+apps/web/node_modules/
+apps/web/out/
