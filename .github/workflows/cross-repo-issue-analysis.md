@@ -13,6 +13,7 @@ if: "github.event_name == 'workflow_dispatch' || github.event.label.name == 'run
 permissions:
   contents: read
   issues: read
+  pull-requests: read
 steps:
   - name: Clone copilot-agent-runtime
     run: git clone --depth 1 https://x-access-token:${{ secrets.RUNTIME_TRIAGE_TOKEN }}@github.com/github/copilot-agent-runtime.git ${{ github.workspace }}/copilot-agent-runtime
