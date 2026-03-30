@@ -199,13 +199,27 @@ func NewClient(options *ClientOptions) *Client {
 		opts.Env = os.Environ()
 	}
 
-	// Check environment variable for CLI path
-	if cliPath := os.Getenv("COPILOT_CLI_PATH"); cliPath != "" {
-		opts.CLIPath = cliPath
+	// Check effective environment for CLI path (only if not explicitly set via options)
+	if opts.CLIPath == "" {
+		if cliPath := getEnvValue(opts.Env, "COPILOT_CLI_PATH"); cliPath != "" {
+			opts.CLIPath = cliPath
+		}
 	}
 
 	client.options = opts
 	return client
+}
+
+// getEnvValue looks up a key in an environment slice ([]string of "KEY=VALUE").
+// Returns the value if found, or empty string otherwise.
+func getEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return env[i][len(prefix):]
+		}
+	}
+	return ""
 }
 
 // parseCliUrl parses a CLI URL into host and port components.
@@ -482,6 +496,37 @@ func (c *Client) ensureConnected(ctx context.Context) error {
 //	        },
 //	    },
 //	})
+//
+// extractTransformCallbacks separates transform callbacks from a SystemMessageConfig,
+// returning a wire-safe config and a map of callbacks (nil if none).
+func extractTransformCallbacks(config *SystemMessageConfig) (*SystemMessageConfig, map[string]SectionTransformFn) {
+	if config == nil || config.Mode != "customize" || len(config.Sections) == 0 {
+		return config, nil
+	}
+
+	callbacks := make(map[string]SectionTransformFn)
+	wireSections := make(map[string]SectionOverride)
+	for id, override := range config.Sections {
+		if override.Transform != nil {
+			callbacks[id] = override.Transform
+			wireSections[id] = SectionOverride{Action: "transform"}
+		} else {
+			wireSections[id] = override
+		}
+	}
+
+	if len(callbacks) == 0 {
+		return config, nil
+	}
+
+	wireConfig := &SystemMessageConfig{
+		Mode:     config.Mode,
+		Content:  config.Content,
+		Sections: wireSections,
+	}
+	return wireConfig, callbacks
+}
+
 func (c *Client) CreateSession(ctx context.Context, config *SessionConfig) (*Session, error) {
 	if config == nil || config.OnPermissionRequest == nil {
 		return nil, fmt.Errorf("an OnPermissionRequest handler is required when creating a session. For example, to allow all permissions, use &copilot.SessionConfig{OnPermissionRequest: copilot.PermissionHandler.ApproveAll}")
@@ -497,7 +542,8 @@ func (c *Client) CreateSession(ctx context.Context, config *SessionConfig) (*Ses
 	req.ReasoningEffort = config.ReasoningEffort
 	req.ConfigDir = config.ConfigDir
 	req.Tools = config.Tools
-	req.SystemMessage = config.SystemMessage
+	wireSystemMessage, transformCallbacks := extractTransformCallbacks(config.SystemMessage)
+	req.SystemMessage = wireSystemMessage
 	req.AvailableTools = config.AvailableTools
 	req.ExcludedTools = config.ExcludedTools
 	req.Provider = config.Provider
@@ -547,6 +593,9 @@ func (c *Client) CreateSession(ctx context.Context, config *SessionConfig) (*Ses
 	}
 	if config.Hooks != nil {
 		session.registerHooks(config.Hooks)
+	}
+	if transformCallbacks != nil {
+		session.registerTransformCallbacks(transformCallbacks)
 	}
 	if config.OnEvent != nil {
 		session.On(config.OnEvent)
@@ -616,7 +665,8 @@ func (c *Client) ResumeSessionWithOptions(ctx context.Context, sessionID string,
 	req.ClientName = config.ClientName
 	req.Model = config.Model
 	req.ReasoningEffort = config.ReasoningEffort
-	req.SystemMessage = config.SystemMessage
+	wireSystemMessage, transformCallbacks := extractTransformCallbacks(config.SystemMessage)
+	req.SystemMessage = wireSystemMessage
 	req.Tools = config.Tools
 	req.Provider = config.Provider
 	req.AvailableTools = config.AvailableTools
@@ -664,6 +714,9 @@ func (c *Client) ResumeSessionWithOptions(ctx context.Context, sessionID string,
 	}
 	if config.Hooks != nil {
 		session.registerHooks(config.Hooks)
+	}
+	if transformCallbacks != nil {
+		session.registerTransformCallbacks(transformCallbacks)
 	}
 	if config.OnEvent != nil {
 		session.On(config.OnEvent)
@@ -734,6 +787,38 @@ func (c *Client) ListSessions(ctx context.Context, filter *SessionListFilter) ([
 	}
 
 	return response.Sessions, nil
+}
+
+// GetSessionMetadata returns metadata for a specific session by ID.
+//
+// This provides an efficient O(1) lookup of a single session's metadata
+// instead of listing all sessions. Returns nil if the session is not found.
+//
+// Example:
+//
+//	metadata, err := client.GetSessionMetadata(context.Background(), "session-123")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	if metadata != nil {
+//	    fmt.Printf("Session started at: %s\n", metadata.StartTime)
+//	}
+func (c *Client) GetSessionMetadata(ctx context.Context, sessionID string) (*SessionMetadata, error) {
+	if err := c.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
+
+	result, err := c.client.Request("session.getMetadata", getSessionMetadataRequest{SessionID: sessionID})
+	if err != nil {
+		return nil, err
+	}
+
+	var response getSessionMetadataResponse
+	if err := json.Unmarshal(result, &response); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal session metadata response: %w", err)
+	}
+
+	return response.Session, nil
 }
 
 // DeleteSession permanently deletes a session and all its data from disk,
@@ -1402,6 +1487,7 @@ func (c *Client) setupNotificationHandler() {
 	c.client.SetRequestHandler("permission.request", jsonrpc2.RequestHandlerFor(c.handlePermissionRequestV2))
 	c.client.SetRequestHandler("userInput.request", jsonrpc2.RequestHandlerFor(c.handleUserInputRequest))
 	c.client.SetRequestHandler("hooks.invoke", jsonrpc2.RequestHandlerFor(c.handleHooksInvoke))
+	c.client.SetRequestHandler("systemMessage.transform", jsonrpc2.RequestHandlerFor(c.handleSystemMessageTransform))
 }
 
 func (c *Client) handleSessionEvent(req sessionEventRequest) {
@@ -1466,6 +1552,26 @@ func (c *Client) handleHooksInvoke(req hooksInvokeRequest) (map[string]any, *jso
 		result["output"] = output
 	}
 	return result, nil
+}
+
+// handleSystemMessageTransform handles a system message transform request from the CLI server.
+func (c *Client) handleSystemMessageTransform(req systemMessageTransformRequest) (systemMessageTransformResponse, *jsonrpc2.Error) {
+	if req.SessionID == "" {
+		return systemMessageTransformResponse{}, &jsonrpc2.Error{Code: -32602, Message: "invalid system message transform payload"}
+	}
+
+	c.sessionsMux.Lock()
+	session, ok := c.sessions[req.SessionID]
+	c.sessionsMux.Unlock()
+	if !ok {
+		return systemMessageTransformResponse{}, &jsonrpc2.Error{Code: -32602, Message: fmt.Sprintf("unknown session %s", req.SessionID)}
+	}
+
+	resp, err := session.handleSystemMessageTransform(req.Sections)
+	if err != nil {
+		return systemMessageTransformResponse{}, &jsonrpc2.Error{Code: -32603, Message: err.Error()}
+	}
+	return resp, nil
 }
 
 // ========================================================================

@@ -92,6 +92,37 @@ public class SessionTests(E2ETestFixture fixture, ITestOutputHelper output) : E2
     }
 
     [Fact]
+    public async Task Should_Create_A_Session_With_Customized_SystemMessage_Config()
+    {
+        var customTone = "Respond in a warm, professional tone. Be thorough in explanations.";
+        var appendedContent = "Always mention quarterly earnings.";
+        var session = await CreateSessionAsync(new SessionConfig
+        {
+            SystemMessage = new SystemMessageConfig
+            {
+                Mode = SystemMessageMode.Customize,
+                Sections = new Dictionary<string, SectionOverride>
+                {
+                    [SystemPromptSections.Tone] = new() { Action = SectionOverrideAction.Replace, Content = customTone },
+                    [SystemPromptSections.CodeChangeRules] = new() { Action = SectionOverrideAction.Remove },
+                },
+                Content = appendedContent
+            }
+        });
+
+        await session.SendAsync(new MessageOptions { Prompt = "Who are you?" });
+        var assistantMessage = await TestHelper.GetFinalAssistantMessageAsync(session);
+        Assert.NotNull(assistantMessage);
+
+        var traffic = await Ctx.GetExchangesAsync();
+        Assert.NotEmpty(traffic);
+        var systemMessage = GetSystemMessage(traffic[0]);
+        Assert.Contains(customTone, systemMessage);
+        Assert.Contains(appendedContent, systemMessage);
+        Assert.DoesNotContain("<code_change_instructions>", systemMessage);
+    }
+
+    [Fact]
     public async Task Should_Create_A_Session_With_AvailableTools()
     {
         var session = await CreateSessionAsync(new SessionConfig
@@ -165,7 +196,7 @@ public class SessionTests(E2ETestFixture fixture, ITestOutputHelper output) : E2
         var session2 = await ResumeSessionAsync(sessionId);
         Assert.Equal(sessionId, session2.SessionId);
 
-        var answer2 = await TestHelper.GetFinalAssistantMessageAsync(session2);
+        var answer2 = await TestHelper.GetFinalAssistantMessageAsync(session2, alreadyIdle: true);
         Assert.NotNull(answer2);
         Assert.Contains("2", answer2!.Data.Content ?? string.Empty);
 
@@ -305,8 +336,10 @@ public class SessionTests(E2ETestFixture fixture, ITestOutputHelper output) : E2
         // Events must be dispatched serially — never more than one handler invocation at a time.
         Assert.Equal(1, maxConcurrent);
 
-        // Verify the assistant response contains the expected answer
-        var assistantMessage = await TestHelper.GetFinalAssistantMessageAsync(session);
+        // Verify the assistant response contains the expected answer.
+        // session.idle is ephemeral and not in getEvents(), but we already
+        // confirmed idle via the live event handler above.
+        var assistantMessage = await TestHelper.GetFinalAssistantMessageAsync(session, alreadyIdle: true);
         Assert.NotNull(assistantMessage);
         Assert.Contains("300", assistantMessage!.Data.Content);
 
@@ -372,6 +405,26 @@ public class SessionTests(E2ETestFixture fixture, ITestOutputHelper output) : E2
         {
             Assert.False(string.IsNullOrEmpty(ourSession.Context.Cwd), "Expected context.Cwd to be non-empty when context is present");
         }
+    }
+
+    [Fact]
+    public async Task Should_Get_Session_Metadata_By_Id()
+    {
+        var session = await CreateSessionAsync();
+
+        // Send a message to persist the session to disk
+        await session.SendAndWaitAsync(new MessageOptions { Prompt = "Say hello" });
+        await Task.Delay(200);
+
+        var metadata = await Client.GetSessionMetadataAsync(session.SessionId);
+        Assert.NotNull(metadata);
+        Assert.Equal(session.SessionId, metadata.SessionId);
+        Assert.NotEqual(default, metadata.StartTime);
+        Assert.NotEqual(default, metadata.ModifiedTime);
+
+        // Verify non-existent session returns null
+        var notFound = await Client.GetSessionMetadataAsync("non-existent-session-id");
+        Assert.Null(notFound);
     }
 
     [Fact]

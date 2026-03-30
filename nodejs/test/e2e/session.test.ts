@@ -15,7 +15,9 @@ describe("Sessions", async () => {
         });
         expect(session.sessionId).toMatch(/^[a-f0-9-]+$/);
 
-        expect(await session.getMessages()).toMatchObject([
+        const allEvents = await session.getMessages();
+        const sessionStartEvents = allEvents.filter((e) => e.type === "session.start");
+        expect(sessionStartEvents).toMatchObject([
             {
                 type: "session.start",
                 data: { sessionId: session.sessionId, selectedModel: "fake-test-model" },
@@ -45,6 +47,28 @@ describe("Sessions", async () => {
         if (ourSession?.context) {
             expect(ourSession.context.cwd).toMatch(/^(\/|[A-Za-z]:)/);
         }
+    });
+
+    it("should get session metadata by ID", { timeout: 60000 }, async () => {
+        const session = await client.createSession({ onPermissionRequest: approveAll });
+        expect(session.sessionId).toMatch(/^[a-f0-9-]+$/);
+
+        // Send a message to persist the session to disk
+        await session.sendAndWait({ prompt: "Say hello" });
+        await new Promise((r) => setTimeout(r, 200));
+
+        // Get metadata for the session we just created
+        const metadata = await client.getSessionMetadata(session.sessionId);
+
+        expect(metadata).toBeDefined();
+        expect(metadata!.sessionId).toBe(session.sessionId);
+        expect(metadata!.startTime).toBeInstanceOf(Date);
+        expect(metadata!.modifiedTime).toBeInstanceOf(Date);
+        expect(typeof metadata!.isRemote).toBe("boolean");
+
+        // Verify non-existent session returns undefined
+        const notFound = await client.getSessionMetadata("non-existent-session-id");
+        expect(notFound).toBeUndefined();
     });
 
     it("should have stateful conversation", async () => {
@@ -94,6 +118,33 @@ describe("Sessions", async () => {
         const traffic = await openAiEndpoint.getExchanges();
         const systemMessage = getSystemMessage(traffic[0]);
         expect(systemMessage).toEqual(testSystemMessage); // Exact match
+    });
+
+    it("should create a session with customized systemMessage config", async () => {
+        const customTone = "Respond in a warm, professional tone. Be thorough in explanations.";
+        const appendedContent = "Always mention quarterly earnings.";
+        const session = await client.createSession({
+            onPermissionRequest: approveAll,
+            systemMessage: {
+                mode: "customize",
+                sections: {
+                    tone: { action: "replace", content: customTone },
+                    code_change_rules: { action: "remove" },
+                },
+                content: appendedContent,
+            },
+        });
+
+        const assistantMessage = await session.sendAndWait({ prompt: "Who are you?" });
+        expect(assistantMessage?.data.content).toBeDefined();
+
+        // Validate the system message sent to the model
+        const traffic = await openAiEndpoint.getExchanges();
+        const systemMessage = getSystemMessage(traffic[0]);
+        expect(systemMessage).toContain(customTone);
+        expect(systemMessage).toContain(appendedContent);
+        // The code_change_rules section should have been removed
+        expect(systemMessage).not.toContain("<code_change_instructions>");
     });
 
     it("should create a session with availableTools", async () => {
@@ -202,8 +253,10 @@ describe("Sessions", async () => {
         });
         expect(session2.sessionId).toBe(sessionId);
 
-        // TODO: There's an inconsistency here. When resuming with a new client, we don't see
-        // the session.idle message in the history, which means we can't use getFinalAssistantMessage.
+        // session.idle is ephemeral and not persisted, so use alreadyIdle
+        // to find the assistant message from the completed session.
+        const answer2 = await getFinalAssistantMessage(session2, { alreadyIdle: true });
+        expect(answer2?.data.content).toContain("2");
 
         const messages = await session2.getMessages();
         expect(messages).toContainEqual(expect.objectContaining({ type: "user.message" }));

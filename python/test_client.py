@@ -4,17 +4,20 @@ CopilotClient Unit Tests
 This file is for unit tests. Where relevant, prefer to add e2e tests in e2e/*.py instead.
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from copilot import (
-    CopilotClient,
+from copilot import CopilotClient, define_tool
+from copilot.client import (
     ExternalServerConfig,
-    PermissionHandler,
-    PermissionRequestResult,
+    ModelCapabilities,
+    ModelInfo,
+    ModelLimits,
+    ModelSupports,
     SubprocessConfig,
-    define_tool,
 )
-from copilot.types import ModelCapabilities, ModelInfo, ModelLimits, ModelSupports
+from copilot.session import PermissionHandler, PermissionRequestResult
 from e2e.testharness import CLI_PATH
 
 
@@ -24,8 +27,18 @@ class TestPermissionHandlerRequired:
         client = CopilotClient(SubprocessConfig(cli_path=CLI_PATH))
         await client.start()
         try:
-            with pytest.raises(ValueError, match="on_permission_request.*is required"):
-                await client.create_session({})
+            with pytest.raises(TypeError, match="on_permission_request"):
+                await client.create_session()  # type: ignore[call-arg]
+        finally:
+            await client.force_stop()
+
+    @pytest.mark.asyncio
+    async def test_create_session_raises_with_none_permission_handler(self):
+        client = CopilotClient(SubprocessConfig(cli_path=CLI_PATH))
+        await client.start()
+        try:
+            with pytest.raises(ValueError, match="on_permission_request handler is required"):
+                await client.create_session(on_permission_request=None)  # type: ignore[arg-type]
         finally:
             await client.force_stop()
 
@@ -35,11 +48,9 @@ class TestPermissionHandlerRequired:
         await client.start()
         try:
             session = await client.create_session(
-                {
-                    "on_permission_request": lambda request, invocation: PermissionRequestResult(
-                        kind="no-result"
-                    )
-                }
+                on_permission_request=lambda request, invocation: PermissionRequestResult(
+                    kind="no-result"
+                )
             )
             with pytest.raises(ValueError, match="protocol v2 server"):
                 await client._handle_permission_request_v2(
@@ -57,10 +68,10 @@ class TestPermissionHandlerRequired:
         await client.start()
         try:
             session = await client.create_session(
-                {"on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all
             )
             with pytest.raises(ValueError, match="on_permission_request.*is required"):
-                await client.resume_session(session.session_id, {})
+                await client.resume_session(session.session_id, on_permission_request=None)
         finally:
             await client.force_stop()
 
@@ -184,7 +195,7 @@ class TestOverridesBuiltInTool:
                 return "ok"
 
             await client.create_session(
-                {"tools": [grep], "on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all, tools=[grep]
             )
             tool_defs = captured["session.create"]["tools"]
             assert len(tool_defs) == 1
@@ -200,15 +211,16 @@ class TestOverridesBuiltInTool:
 
         try:
             session = await client.create_session(
-                {"on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all
             )
 
             captured = {}
-            original_request = client._client.request
 
             async def mock_request(method, params):
                 captured[method] = params
-                return await original_request(method, params)
+                # Return a fake response instead of calling the real CLI,
+                # which would fail without auth credentials.
+                return {"sessionId": params["sessionId"]}
 
             client._client.request = mock_request
 
@@ -218,7 +230,8 @@ class TestOverridesBuiltInTool:
 
             await client.resume_session(
                 session.session_id,
-                {"tools": [grep], "on_permission_request": PermissionHandler.approve_all},
+                on_permission_request=PermissionHandler.approve_all,
+                tools=[grep],
             )
             tool_defs = captured["session.resume"]["tools"]
             assert len(tool_defs) == 1
@@ -365,7 +378,7 @@ class TestSessionConfigForwarding:
 
             client._client.request = mock_request
             await client.create_session(
-                {"client_name": "my-app", "on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all, client_name="my-app"
             )
             assert captured["session.create"]["clientName"] == "my-app"
         finally:
@@ -378,7 +391,7 @@ class TestSessionConfigForwarding:
 
         try:
             session = await client.create_session(
-                {"on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all
             )
 
             captured = {}
@@ -394,7 +407,8 @@ class TestSessionConfigForwarding:
             client._client.request = mock_request
             await client.resume_session(
                 session.session_id,
-                {"client_name": "my-app", "on_permission_request": PermissionHandler.approve_all},
+                on_permission_request=PermissionHandler.approve_all,
+                client_name="my-app",
             )
             assert captured["session.resume"]["clientName"] == "my-app"
         finally:
@@ -415,11 +429,9 @@ class TestSessionConfigForwarding:
 
             client._client.request = mock_request
             await client.create_session(
-                {
-                    "agent": "test-agent",
-                    "custom_agents": [{"name": "test-agent", "prompt": "You are a test agent."}],
-                    "on_permission_request": PermissionHandler.approve_all,
-                }
+                on_permission_request=PermissionHandler.approve_all,
+                agent="test-agent",
+                custom_agents=[{"name": "test-agent", "prompt": "You are a test agent."}],
             )
             assert captured["session.create"]["agent"] == "test-agent"
         finally:
@@ -432,7 +444,7 @@ class TestSessionConfigForwarding:
 
         try:
             session = await client.create_session(
-                {"on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all
             )
 
             captured = {}
@@ -447,11 +459,9 @@ class TestSessionConfigForwarding:
             client._client.request = mock_request
             await client.resume_session(
                 session.session_id,
-                {
-                    "agent": "test-agent",
-                    "custom_agents": [{"name": "test-agent", "prompt": "You are a test agent."}],
-                    "on_permission_request": PermissionHandler.approve_all,
-                },
+                on_permission_request=PermissionHandler.approve_all,
+                agent="test-agent",
+                custom_agents=[{"name": "test-agent", "prompt": "You are a test agent."}],
             )
             assert captured["session.resume"]["agent"] == "test-agent"
         finally:
@@ -464,7 +474,7 @@ class TestSessionConfigForwarding:
 
         try:
             session = await client.create_session(
-                {"on_permission_request": PermissionHandler.approve_all}
+                on_permission_request=PermissionHandler.approve_all
             )
 
             captured = {}
@@ -482,3 +492,39 @@ class TestSessionConfigForwarding:
             assert captured["session.model.switchTo"]["modelId"] == "gpt-4.1"
         finally:
             await client.force_stop()
+
+
+class TestCopilotClientContextManager:
+    @pytest.mark.asyncio
+    async def test_aenter_calls_start_and_returns_self(self):
+        client = CopilotClient(SubprocessConfig(cli_path=CLI_PATH))
+        with patch.object(client, "start", new_callable=AsyncMock) as mock_start:
+            result = await client.__aenter__()
+            mock_start.assert_awaited_once()
+            assert result is client
+
+    @pytest.mark.asyncio
+    async def test_aexit_calls_stop(self):
+        client = CopilotClient(SubprocessConfig(cli_path=CLI_PATH))
+        with patch.object(client, "stop", new_callable=AsyncMock) as mock_stop:
+            await client.__aexit__(None, None, None)
+            mock_stop.assert_awaited_once()
+
+
+class TestCopilotSessionContextManager:
+    @pytest.mark.asyncio
+    async def test_aenter_returns_self(self):
+        from copilot.session import CopilotSession
+
+        session = CopilotSession.__new__(CopilotSession)
+        result = await session.__aenter__()
+        assert result is session
+
+    @pytest.mark.asyncio
+    async def test_aexit_calls_disconnect(self):
+        from copilot.session import CopilotSession
+
+        session = CopilotSession.__new__(CopilotSession)
+        with patch.object(session, "disconnect", new_callable=AsyncMock) as mock_disconnect:
+            await session.__aexit__(None, None, None)
+            mock_disconnect.assert_awaited_once()

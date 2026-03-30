@@ -67,7 +67,7 @@ new CopilotClient(CopilotClientOptions? options = null)
 
 **Options:**
 
-- `CliPath` - Path to CLI executable (default: "copilot" from PATH)
+- `CliPath` - Path to CLI executable (default: `COPILOT_CLI_PATH` env var, or bundled CLI)
 - `CliArgs` - Extra arguments prepended before SDK-managed flags
 - `CliUrl` - URL of existing CLI server to connect to (e.g., `"localhost:8080"`). When provided, the client will not spawn a CLI process.
 - `Port` - Server port (default: 0 for random)
@@ -508,6 +508,34 @@ var session = await client.CreateSessionAsync(new SessionConfig
     }
 });
 ```
+
+#### Customize Mode
+
+Use `Mode = SystemMessageMode.Customize` to selectively override individual sections of the prompt while preserving the rest:
+
+```csharp
+var session = await client.CreateSessionAsync(new SessionConfig
+{
+    Model = "gpt-5",
+    SystemMessage = new SystemMessageConfig
+    {
+        Mode = SystemMessageMode.Customize,
+        Sections = new Dictionary<string, SectionOverride>
+        {
+            [SystemPromptSections.Tone] = new() { Action = SectionOverrideAction.Replace, Content = "Respond in a warm, professional tone. Be thorough in explanations." },
+            [SystemPromptSections.CodeChangeRules] = new() { Action = SectionOverrideAction.Remove },
+            [SystemPromptSections.Guidelines] = new() { Action = SectionOverrideAction.Append, Content = "\n* Always cite data sources" },
+        },
+        Content = "Focus on financial analysis and reporting."
+    }
+});
+```
+
+Available section IDs are defined as constants on `SystemPromptSections`: `Identity`, `Tone`, `ToolEfficiency`, `EnvironmentContext`, `CodeChangeRules`, `Guidelines`, `Safety`, `ToolInstructions`, `CustomInstructions`, `LastInstructions`.
+
+Each section override supports four actions: `Replace`, `Remove`, `Append`, and `Prepend`. Unknown section IDs are handled gracefully: content is appended to additional instructions, and `Remove` overrides are silently ignored.
+
+#### Replace Mode
 
 For full control (removes all guardrails), use `Mode = SystemMessageMode.Replace`:
 
